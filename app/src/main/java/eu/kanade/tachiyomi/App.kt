@@ -46,6 +46,8 @@ import eu.kanade.tachiyomi.util.system.notify
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import logcat.AndroidLogcatLogger
 import logcat.LogPriority
 import logcat.LogcatLogger
@@ -191,20 +193,24 @@ class App : Application(), DefaultLifecycleObserver, SingletonImageLoader.Factor
     }
 
     override fun getPackageName(): String {
-        try {
-            // Override the value passed as X-Requested-With in WebView requests
-            val stackTrace = Looper.getMainLooper().thread.stackTrace
-            val chromiumElement = stackTrace.find {
-                it.className.equals(
-                    "org.chromium.base.BuildInfo",
-                    ignoreCase = true,
-                )
-            }
-            if (chromiumElement?.methodName.equals("getAll", ignoreCase = true)) {
-                return WebViewUtil.SPOOF_PACKAGE_NAME
-            }
-        } catch (_: Exception) {
-        }
+//        try {
+//            // Override the value passed as X-Requested-With in WebView requests
+//            val stackTrace = Looper.getMainLooper().thread.stackTrace
+//            val chromiumElements = stackTrace.filter {
+//                it.className.contains(
+//                    "webview",
+//                    ignoreCase = true
+//                )
+//            }
+//            logcat { "classes:\n" + chromiumElements.joinToString("\n") { it.className } }
+//            logcat { "methods:\n" + chromiumElements.joinToString("\n") { it.methodName } }
+//
+//            if (chromiumElements.firstOrNull { it.methodName.equals("loadUrl", true) } != null) {
+//                return WebViewUtil.SPOOF_PACKAGE_NAME
+//            }
+//        } catch (e: Exception) {
+//            logcat(throwable = e) { e.stackTraceToString() }
+//        }
         return super.getPackageName()
     }
 
