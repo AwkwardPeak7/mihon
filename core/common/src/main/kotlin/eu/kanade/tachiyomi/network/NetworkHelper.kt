@@ -5,13 +5,17 @@ import eu.kanade.tachiyomi.network.interceptor.CloudflareInterceptor
 import eu.kanade.tachiyomi.network.interceptor.IgnoreGzipInterceptor
 import eu.kanade.tachiyomi.network.interceptor.UncaughtExceptionInterceptor
 import eu.kanade.tachiyomi.network.interceptor.UserAgentInterceptor
+import kotlinx.serialization.InternalSerializationApi
+import kotlinx.serialization.json.Json
 import okhttp3.Cache
 import okhttp3.OkHttpClient
 import okhttp3.brotli.BrotliInterceptor
 import okhttp3.logging.HttpLoggingInterceptor
 import java.io.File
 import java.util.concurrent.TimeUnit
+import java.net.Proxy.Type as ProxyType
 
+@OptIn(InternalSerializationApi::class)
 class NetworkHelper(
     private val context: Context,
     private val preferences: NetworkPreferences,
@@ -56,8 +60,35 @@ class NetworkHelper(
             PREF_DOH_CONTROLD -> builder.dohControlD()
             PREF_DOH_NJALLA -> builder.dohNajalla()
             PREF_DOH_SHECAN -> builder.dohShecan()
-            else -> builder
+            else -> {}
         }
+
+        val proxyConfigurationPref = preferences.proxyConfig().get()
+
+        if (proxyConfigurationPref.isNotBlank()) {
+            val proxy = Json.decodeFromString<Proxy>(proxyConfigurationPref)
+
+            if (proxy.enabled) {
+                builder.proxy(proxy.getProxy() ?: Proxy.getBlackHoleProxy(context))
+                proxy.setWebViewProxy(context)
+
+                when (proxy.proxyType) {
+                    ProxyType.HTTP -> {
+                        proxy.getOkhttpAuthenticator()?.let { proxyAuthenticator ->
+                            builder.proxyAuthenticator(proxyAuthenticator)
+                        }
+                    }
+
+                    ProxyType.SOCKS -> {
+                        proxy.setSocksAuthentication()
+                    }
+
+                    else -> Unit
+                }
+            }
+        }
+
+        builder
     }
 
     val nonCloudflareClient = clientBuilder.build()

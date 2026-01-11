@@ -213,6 +213,7 @@ dependencies {
     implementation(androidx.biometricktx)
     implementation(androidx.constraintlayout)
     implementation(androidx.corektx)
+    implementation(libs.androidx.webkit)
     implementation(androidx.splashscreen)
     implementation(androidx.recyclerview)
     implementation(androidx.viewpager)

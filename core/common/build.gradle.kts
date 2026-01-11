@@ -41,6 +41,8 @@ dependencies {
 
     api(libs.preferencektx)
 
+    implementation(libs.androidx.webkit)
+
     implementation(libs.jsoup)
 
     // Sort
