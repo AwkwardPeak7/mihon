@@ -16,6 +16,8 @@ import eu.kanade.tachiyomi.data.cache.CoverCache
 import eu.kanade.tachiyomi.data.coil.MangaCoverFetcher.Companion.USE_CUSTOM_COVER_KEY
 import eu.kanade.tachiyomi.network.await
 import eu.kanade.tachiyomi.source.online.HttpSource
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import logcat.LogPriority
 import okhttp3.CacheControl
 import okhttp3.Call
@@ -34,6 +36,7 @@ import tachiyomi.domain.source.service.SourceManager
 import uy.kohesive.injekt.injectLazy
 import java.io.File
 import java.io.IOException
+import kotlin.math.absoluteValue
 
 /**
  * A [Fetcher] that fetches cover image for [Manga] object.
@@ -132,21 +135,53 @@ class MangaCoverFetcher(
                     dataSource = DataSource.DISK,
                 )
             }
+        } catch (e: Exception) {
+            snapshot?.close()
+            throw e
+        }
 
-            // Fetch from network
+        // Fetch from network
+        val mutex = mutexes[diskCacheKey.hashCode().absoluteValue % mutexes.size]
+        return mutex.withLock {
+            if (libraryCoverCacheFile?.exists() == true && options.diskCachePolicy.readEnabled) {
+                return@withLock fileLoader(libraryCoverCacheFile)
+            }
+
+            var snapshot2 = readFromDiskCache()
+            try {
+                // Fetch from disk cache
+                if (snapshot2 != null) {
+                    val snapshotCoverCache = moveSnapshotToCoverCache(snapshot2, libraryCoverCacheFile)
+                    if (snapshotCoverCache != null) {
+                        // Read from cover cache after added to library
+                        return@withLock fileLoader(snapshotCoverCache)
+                    }
+
+                    // Read from snapshot
+                    return@withLock SourceFetchResult(
+                        source = snapshot2.toImageSource(),
+                        mimeType = "image/*",
+                        dataSource = DataSource.DISK,
+                    )
+                }
+            } catch (e: Exception) {
+                snapshot2?.close()
+                throw e
+            }
+
             val response = executeNetworkRequest()
             val responseBody = checkNotNull(response.body) { "Null response source" }
             try {
                 // Read from cover cache after library manga cover updated
                 val responseCoverCache = writeResponseToCoverCache(response, libraryCoverCacheFile)
                 if (responseCoverCache != null) {
-                    return fileLoader(responseCoverCache)
+                    return@withLock fileLoader(responseCoverCache)
                 }
 
                 // Read from disk cache
                 snapshot = writeToDiskCache(response)
                 if (snapshot != null) {
-                    return SourceFetchResult(
+                    return@withLock SourceFetchResult(
                         source = snapshot.toImageSource(),
                         mimeType = "image/*",
                         dataSource = DataSource.NETWORK,
@@ -154,7 +189,7 @@ class MangaCoverFetcher(
                 }
 
                 // Read from response if cache is unused or unusable
-                return SourceFetchResult(
+                return@withLock SourceFetchResult(
                     source = ImageSource(source = responseBody.source(), fileSystem = FileSystem.SYSTEM),
                     mimeType = "image/*",
                     dataSource = if (response.cacheResponse != null) DataSource.DISK else DataSource.NETWORK,
@@ -163,9 +198,6 @@ class MangaCoverFetcher(
                 responseBody.close()
                 throw e
             }
-        } catch (e: Exception) {
-            snapshot?.close()
-            throw e
         }
     }
 
@@ -348,5 +380,7 @@ class MangaCoverFetcher(
         private val CACHE_CONTROL_NO_NETWORK_NO_CACHE = CacheControl.Builder().noCache().onlyIfCached().build()
 
         private const val HTTP_NOT_MODIFIED = 304
+
+        private val mutexes = List(128) { Mutex() }
     }
 }
