@@ -238,7 +238,14 @@ insertNetworkManga {
         genre = CASE WHEN :updateDetails THEN :genre ELSE genre END,
         status = CASE WHEN :updateDetails THEN :status ELSE status END,
         update_strategy = CASE WHEN :updateDetails THEN :updateStrategy ELSE update_strategy END,
-        initialized = :updateDetails
+        initialized = CASE
+            WHEN :updateDetails THEN :initialized
+            ELSE CASE
+                WHEN (:updateTitle AND title != :title) OR (:updateCover AND thumbnail_url != :thumbnailUrl)
+                THEN 0
+                ELSE initialized
+            END
+        END
     WHERE source = :source
     AND url = :url
     AND favorite = 0;
