@@ -12,26 +12,38 @@ import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import okhttp3.Headers
+import okhttp3.MediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
+import okio.Buffer
 import rx.Observable
 import tachiyomi.core.common.util.lang.awaitSingle
 import uy.kohesive.injekt.injectLazy
 import java.net.URI
 import java.net.URISyntaxException
 import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * A simple implementation for sources from a website.
  */
-@Suppress("unused")
 abstract class HttpSource : CatalogueSource {
+
+    private val requestMap = ConcurrentHashMap<String, Observable<SharedResponse>>()
 
     /**
      * Network service.
      */
     protected val network: NetworkHelper by injectLazy()
+
+    private data class SharedResponse(
+        val code: Int,
+        val headers: Headers,
+        val body: ByteArray,
+        val mediaType: MediaType?,
+    )
 
     /**
      * Base url of the website without the trailing slash, like: http://mysite.com
@@ -101,6 +113,79 @@ abstract class HttpSource : CatalogueSource {
      * Visible name of the source.
      */
     override fun toString() = "$name (${lang.uppercase()})"
+
+    private fun fetchSharedResponse(request: Request): Observable<Response> {
+        val key = generateKey(request) ?: return client.newCall(request).asObservableSuccess()
+
+        val obs = requestMap.computeIfAbsent(key) {
+            client.newCall(request).asObservableSuccess()
+                .map { response ->
+                    // map(): Read the body bytes once and store them in a shared object.
+                    // This is crucial because ResponseBody is a one-shot stream.
+                    // If we shared the original Response, only the first subscriber could read it.
+                    val bodyBytes = response.body.bytes()
+                    val mediaType = response.body.contentType()
+                    SharedResponse(response.code, response.headers, bodyBytes, mediaType)
+                }
+                // doOnTerminate(): Remove the key when the network request finishes (success or error).
+                // This ensures future requests (not concurrent ones) start a fresh network call.
+                .doOnTerminate { requestMap.remove(key) }
+                // doOnUnsubscribe(): Remove the key if all subscribers cancel before the request finishes.
+                .doOnUnsubscribe { requestMap.remove(key) }
+                // replay(1).refCount(): Share the result.
+                // replay(1) ensures late subscribers get the emitted value even if they subscribe
+                // slightly after the network call finishes but before the Observable is cleaned up.
+                // refCount() keeps the upstream subscription alive as long as there are subscribers.
+                .replay(1)
+                .refCount()
+        }
+
+        return obs.map { shared ->
+            // Create a new Response object for *each* subscriber.
+            // We wrap the cached bytes in a new ResponseBody so every subscriber has their own stream.
+            val newBody = shared.body.toResponseBody(shared.mediaType)
+            Response.Builder()
+                .request(request)
+                .protocol(okhttp3.Protocol.HTTP_1_1)
+                .code(shared.code)
+                .message("OK")
+                .headers(shared.headers)
+                .body(newBody)
+                .build()
+        }
+    }
+
+    private fun generateKey(request: Request): String? {
+        val md5 = MessageDigest.getInstance("MD5")
+        md5.update(request.method.toByteArray())
+        md5.update(request.url.toString().toByteArray())
+
+        val headers = request.headers
+        val sortedHeaders = headers.names().sorted().map { name ->
+            name to headers.values(name).sorted()
+        }
+        for ((name, values) in sortedHeaders) {
+            md5.update(name.toByteArray())
+            for (value in values) {
+                md5.update(value.toByteArray())
+            }
+        }
+
+        val body = request.body
+        if (body != null) {
+            if (body.isOneShot()) return null
+            val buffer = Buffer()
+            try {
+                body.writeTo(buffer)
+                md5.update(buffer.readByteArray())
+            } catch (e: Exception) {
+                return null
+            }
+        }
+
+        val digest = md5.digest()
+        return digest.joinToString("") { "%02x".format(it) }
+    }
 
     /**
      * Returns an observable containing a page with a list of manga. Normally it's not needed to
@@ -221,8 +306,7 @@ abstract class HttpSource : CatalogueSource {
 
     @Deprecated("Use the non-RxJava API instead", replaceWith = ReplaceWith("getMangaDetails"))
     override fun fetchMangaDetails(manga: SManga): Observable<SManga> {
-        return client.newCall(mangaDetailsRequest(manga))
-            .asObservableSuccess()
+        return fetchSharedResponse(mangaDetailsRequest(manga))
             .map { response ->
                 mangaDetailsParse(response).apply { initialized = true }
             }
@@ -259,8 +343,7 @@ abstract class HttpSource : CatalogueSource {
 
     @Deprecated("Use the non-RxJava API instead", replaceWith = ReplaceWith("getChapterList"))
     override fun fetchChapterList(manga: SManga): Observable<List<SChapter>> {
-        return client.newCall(chapterListRequest(manga))
-            .asObservableSuccess()
+        return fetchSharedResponse(chapterListRequest(manga))
             .map { response ->
                 chapterListParse(response)
             }
